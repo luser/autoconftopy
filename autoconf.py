@@ -176,13 +176,26 @@ def reduce_depth(thing):
 class UnhandledTranslation(Exception):
     pass
 
+flatten=lambda l: sum(map(flatten,l),[]) if isinstance(l,list) else [l]
+
 class ShellTranslator:
     def __init__(self, macro_handler, template):
         self.macro_handler = macro_handler
         self.template = template
 
     def translate_if(self, if_):
-        raise UnhandledTranslation('if')
+        test = flatten(self.translate_commands(if_.cond))
+        if len(test) > 1:
+            raise UnhandledTranslation('Pipeline in if condition')
+        if not test:
+            raise UnhandledTranslation('Empty if condition?')
+        body = flatten(self.translate_commands(if_.if_cmds))
+        if not body:
+            body.append(ast.Pass())
+        orelse = flatten(self.translate_commands(if_.else_cmds))
+        call = test[0].value if isinstance(test[0], ast.Expr) else test[0]
+        test_expr = ast.UnaryOp(ast.Not(), call)
+        return ast.If(test_expr, body, orelse)
 
     def translate_case(self, case):
         raise UnhandledTranslation('case')
@@ -213,6 +226,7 @@ class ShellTranslator:
         # lazy
         expr = ast.parse('subprocess.call()').body[0]
         call = expr.value
+        # FIXME: this doesn't handle word expansion (variables etc)
         call.args = [ast.Str(wordstr)]
         # TODO: need to pass in env
         call.keywords = [ast.keyword('shell', ast.Name('True', ast.Load()))]
@@ -267,7 +281,6 @@ class ShellTranslator:
     def translate(self, commands):
         main = filter(lambda x: isinstance(x, ast.FunctionDef), self.template.body)[0]
         main.body = []
-        flatten=lambda l: sum(map(flatten,l),[]) if isinstance(l,list) else [l]
         main.body.extend(flatten(self.translate_commands(commands)))
         substassign = filter(lambda x: isinstance(x, ast.Assign) and x.targets[0].id == 'SUBSTS', self.template.body)[0]
         substassign.value.args = [ast.Str(s) for s in self.macro_handler.substs]
@@ -288,4 +301,5 @@ if __name__ == '__main__':
 
 translator = ShellTranslator(macro_handler, template)
 translator.translate(stuff)
+#meta.asttools.print_ast(template)
 sys.stdout.write(meta.dump_python_source(template))
