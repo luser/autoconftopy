@@ -105,7 +105,7 @@ MACROS = [
     'AM_LANGINFO_CODESET',
 ]
 
-class AutoconfMacros:
+class MacroHandler:
     def __init__(self):
         self.expansions = []
 
@@ -140,10 +140,10 @@ class AutoconfMacros:
 
 p = Parser(sys.stdin.read())
 p.changequote('[',']')
-macros = AutoconfMacros()
+macro_handler = MacroHandler()
 for m in MACROS:
-    if hasattr(macros, m):
-        p.macros[m] = getattr(macros, m)
+    if hasattr(macro_handler, m):
+        p.macros[m] = getattr(macro_handler, m)
     else:
         # for now replace all other macros with true so the shell parses
         p.macros[m] = lambda x: '[true]'
@@ -173,8 +173,8 @@ class UnhandledTranslation(Exception):
     pass
 
 class ShellTranslator:
-    def __init__(self, macros):
-        self.macros = macros
+    def __init__(self, macro_handler):
+        self.macro_handler = macro_handler
 
     def translate_if(self, if_):
         raise UnhandledTranslation('if')
@@ -194,7 +194,7 @@ class ShellTranslator:
 
     thunk_re = re.compile('__python(\d+)__')
     def python_thunk(self, index):
-        return self.macros.get_expansion(index)
+        return self.macro_handler.get_expansion(index)
 
     def translate_simplecommand_words(self, words):
         words = [w[1] for w in words]
@@ -276,6 +276,6 @@ if __name__ == '__main__':
 main = filter(lambda x: isinstance(x, ast.FunctionDef), template.body)[0]
 main.body = []
 
-translator = ShellTranslator(macros)
+translator = ShellTranslator(macro_handler)
 main.body.extend(flatten(translator.translate_commands(stuff)))
 sys.stdout.write(meta.dump_python_source(template))
