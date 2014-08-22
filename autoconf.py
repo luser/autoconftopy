@@ -214,15 +214,28 @@ class ShellTranslator:
     def python_thunk(self, index):
         return self.macro_handler.get_expansion(index)
 
+    def sys_exit(self, ret):
+        expr = ast.parse('sys.exit()').body[0]
+        expr.value.args = [ast.Num(int(ret))]
+        return expr
+
+    def echo(self, s):
+        return ast.Print(None, [ast.Str(s)], True)
+
     def translate_simplecommand_words(self, words):
         words = [w[1] for w in words]
         wordstr = ' '.join(words)
-        if wordstr == 'true':
-            # not high fidelity, but I can live with this.
-            return []
         m = self.thunk_re.match(wordstr)
         if m:
             return self.python_thunk(int(m.group(1)))
+        # Special-case some commands
+        if wordstr == 'true':
+            # not high fidelity, but I can live with this.
+            return []
+        if words[0] == 'exit':
+            return self.sys_exit(words[1])
+        if words[0] == 'echo':
+            return self.echo(words[1])
         # lazy
         expr = ast.parse('subprocess.call()').body[0]
         call = expr.value
