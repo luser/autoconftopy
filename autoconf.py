@@ -207,7 +207,10 @@ class ShellTranslator:
         raise UnhandledTranslation('pipeline')
 
     def translate_simpleassignment(self, assign):
-        return ast.Assign(targets=[ast.Name(id=assign[0], ctx=ast.Store())],
+        sub = ast.Subscript(ast.Name('vars', ast.Load()),
+                            ast.Index(ast.Str(assign[0])),
+                            ast.Store())
+        return ast.Assign(targets=[sub],
                           value=ast.Str(assign[1]))
 
     thunk_re = re.compile('__python(\d+)__')
@@ -221,6 +224,19 @@ class ShellTranslator:
 
     def echo(self, s):
         return ast.Print(None, [ast.Str(s)], True)
+
+    def export(self, exports):
+        def mkexport(e):
+            bits = e.split('=', 1)
+            var = bits[0]
+            expr = ast.parse('exports.add()').body[0]
+            expr.value.args = [ast.Str(var)]
+            if len(e) == 1:
+                return expr
+            val = e[1]
+            return [self.translate_simpleassignment(bits), expr]
+
+        return [mkexport(e) for e in exports]
 
     def translate_simplecommand_words(self, words):
         words = [w[1] for w in words]
@@ -236,13 +252,13 @@ class ShellTranslator:
             return self.sys_exit(words[1])
         if words[0] == 'echo':
             return self.echo(words[1])
+        if words[0] == 'export':
+            return self.export(words[1:])
         # lazy
-        expr = ast.parse('subprocess.call()').body[0]
+        expr = ast.parse('subprocess.call(shell=True, env=varenv(vars, exports))').body[0]
         call = expr.value
         # FIXME: this doesn't handle word expansion (variables etc)
         call.args = [ast.Str(wordstr)]
-        # TODO: need to pass in env
-        call.keywords = [ast.keyword('shell', ast.Name('True', ast.Load()))]
         return expr
 
     def translate_simplecommand(self, cmd):
@@ -292,21 +308,28 @@ class ShellTranslator:
             raise UnhandledTranslation('Unhandled thing: %s' % repr(v))
 
     def translate(self, commands):
-        main = filter(lambda x: isinstance(x, ast.FunctionDef), self.template.body)[0]
-        main.body = []
+        main = filter(lambda x: isinstance(x, ast.FunctionDef) and x.name == 'main', self.template.body)[0]
         main.body.extend(flatten(self.translate_commands(commands)))
         substassign = filter(lambda x: isinstance(x, ast.Assign) and x.targets[0].id == 'SUBSTS', self.template.body)[0]
         substassign.value.args = [ast.Str(s) for s in self.macro_handler.substs]
 
 
 template = ast.parse("""
+import os
 import sys
 import subprocess
 
 SUBSTS = set()
 
+def varenv(vars, exports):
+    env = {}
+    for e in exports:
+        env[e] = vars[e]
+    return env
+
 def main(args):
-    pass
+    vars = dict(os.environ)
+    exports = set(vars.keys())
 
 if __name__ == '__main__':
     main(sys.argv)
