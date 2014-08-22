@@ -108,6 +108,7 @@ MACROS = [
 class MacroHandler:
     def __init__(self):
         self.expansions = []
+        self.substs = set()
 
     def get_expansion(self, index):
         return self.expansions[index]
@@ -118,6 +119,9 @@ class MacroHandler:
         index = len(self.expansions)
         self.expansions.append(code)
         return '[__python%d__]' % index
+
+    def AC_SUBST(self, args):
+        self.substs.add(args[0])
 
     def ac_msg(self, msg):
         return self.py('sys.stdout.write(%s)' % repr(msg + '\n'))
@@ -173,8 +177,9 @@ class UnhandledTranslation(Exception):
     pass
 
 class ShellTranslator:
-    def __init__(self, macro_handler):
+    def __init__(self, macro_handler, template):
         self.macro_handler = macro_handler
+        self.template = template
 
     def translate_if(self, if_):
         raise UnhandledTranslation('if')
@@ -259,12 +264,20 @@ class ShellTranslator:
         else:
             raise UnhandledTranslation('Unhandled thing: %s' % repr(v))
 
-flatten=lambda l: sum(map(flatten,l),[]) if isinstance(l,list) else [l]
+    def translate(self, commands):
+        main = filter(lambda x: isinstance(x, ast.FunctionDef), self.template.body)[0]
+        main.body = []
+        flatten=lambda l: sum(map(flatten,l),[]) if isinstance(l,list) else [l]
+        main.body.extend(flatten(self.translate_commands(commands)))
+        substassign = filter(lambda x: isinstance(x, ast.Assign) and x.targets[0].id == 'SUBSTS', self.template.body)[0]
+        substassign.value.args = [ast.Str(s) for s in self.macro_handler.substs]
 
 
 template = ast.parse("""
 import sys
 import subprocess
+
+SUBSTS = set()
 
 def main(args):
     pass
@@ -273,9 +286,6 @@ if __name__ == '__main__':
     main(sys.argv)
 """)
 
-main = filter(lambda x: isinstance(x, ast.FunctionDef), template.body)[0]
-main.body = []
-
-translator = ShellTranslator(macro_handler)
-main.body.extend(flatten(translator.translate_commands(stuff)))
+translator = ShellTranslator(macro_handler, template)
+translator.translate(stuff)
 sys.stdout.write(meta.dump_python_source(template))
