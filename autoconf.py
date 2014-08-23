@@ -126,13 +126,15 @@ class MacroHandler:
         self.substs.add(args[0])
 
     def ac_msg(self, msg):
-        return self.py('sys.stdout.write(%s)' % repr(msg + '\n'))
+        expr = ast.parse('sys.stdout.write()').body[0]
+        expr.value.args = [ast.Str(msg + '\n')]
+        return self.py(expr)
 
     def AC_MSG_CHECKING(self, args):
-        return self.ac_msg('checking for ' + args[0])
+        return self.ac_msg('configure: checking ' + args[0])
 
     def AC_MSG_WARN(self, args):
-        return self.ac_msg('warning: ' + args[0])
+        return self.ac_msg('configure: warning: ' + args[0])
 
     def AC_MSG_RESULT(self, args):
         return self.ac_msg(args[0])
@@ -141,8 +143,9 @@ class MacroHandler:
         return self.AC_ERROR(args)
 
     def AC_ERROR(self, args):
-        # string escaping is kind of terrible here
-        return self.py('sys.stderr.write(%s)\nsys.exit(1)' % repr(args[0] + '\n'))
+        code = ast.parse('sys.stderr.write()\nsys.exit(1)').body
+        code[0].value.args = [ast.Str('configure: error: ' + args[0] + '\n')]
+        return self.py(code)
 
 p = Parser(sys.stdin.read())
 p.changequote('[',']')
@@ -234,7 +237,7 @@ class ShellTranslator:
             args = []
             for word in words:
                 args += self.interp.expand_token(word)
-            return (words, wrap.var_gets, wrap.commands)
+            return (args, wrap.var_gets, wrap.commands)
 
     def expand_variable(self, word):
         '''
@@ -266,7 +269,7 @@ class ShellTranslator:
     def translate_pipeline(self, pipe):
         raise UnhandledTranslation('pipeline')
 
-    def translate_assign_value(self, value, vars, commands):
+    def translate_value(self, value, vars, commands):
         if not vars and not commands:
             # no variable expansion or anything funny
             return ast.Str(value)
@@ -293,7 +296,7 @@ class ShellTranslator:
                             ast.Index(ast.Str(k)),
                             ast.Store())
         return ast.Assign(targets=[sub],
-                          value=self.translate_assign_value(expanded, vars, commands))
+                          value=self.translate_value(expanded, vars, commands))
 
     thunk_re = re.compile('__python(\d+)__')
     def python_thunk(self, index):
@@ -305,7 +308,7 @@ class ShellTranslator:
         return expr
 
     def echo(self, s):
-        return ast.Print(None, [ast.Str(s)], True)
+        return ast.Print(None, [s], True)
 
     def export(self, exports):
         def mkexport(e):
@@ -320,33 +323,44 @@ class ShellTranslator:
 
         return [mkexport(e) for e in exports]
 
-    def make_call(self, wordstr, call_type=None):
+    def make_call(self, cmd, call_type=None):
         expr = ast.parse('subprocess.call(shell=True, env=varenv(vars, exports))').body[0]
         call = expr.value
-        call.args = [ast.Str(wordstr)]
+        call.args = []
+        if isinstance(cmd, str):
+            call.args.append(ast.Str(cmd))
+        elif isinstance(cmd, list):
+            call.args.append(ast.List([ast.Str(c) for c in cmd], ast.Load()))
+        else:
+            raise UnhandledTranslation('Unknown cmd %s' % type(cmd))
         if call_type == 'check_output':
+            call.func.attr = call_type
             expr2 = ast.parse('x.rstrip("\\n")').body[0]
             expr2.value.func.value = expr.value
             return expr2
+        elif call_type is not None:
+            raise UnhandledTranslation('Unknown call_type %s' % call_type)
         return expr
 
-    def translate_simplecommand_words(self, words):
-        words = [w[1] for w in words]
-        wordstr = ' '.join(words)
-        m = self.thunk_re.match(wordstr)
+    def translate_simplecommand_words(self, cmd_words):
+        words, vars, commands = self.expand_words(cmd_words)
+        if not words:
+            return []
+        m = self.thunk_re.match(words[0])
         if m:
             return self.python_thunk(int(m.group(1)))
         # Special-case some commands
-        if wordstr == 'true':
+        if words[0] == 'true':
             # not high fidelity, but I can live with this.
             return []
         if words[0] == 'exit':
-            return self.sys_exit(words[1])
+            return self.sys_exit(self.translate_value(words[1], vars, commands))
         if words[0] == 'echo':
-            return self.echo(words[1])
+            return self.echo(self.translate_value(words[1], vars, commands))
         if words[0] == 'export':
+            #XXX: fix this
             return self.export(words[1:])
-        return self.make_call(wordstr)
+        return self.make_call([w[1] for w in cmd_words])
 
     def translate_simplecommand(self, cmd):
         if cmd.redirs:
