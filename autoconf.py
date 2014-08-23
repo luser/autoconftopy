@@ -215,6 +215,7 @@ class ShellTranslator:
         def __enter__(self):
             # This is monkeypatching an interp.Interpreter method
             def wrap_subshell(command):
+                #XXX: this isn't sufficient. needs to parse command
                 cmd = self.translator.make_call(command, call_type='check_output').value
                 ret = '{cmd%d}' % len(self.commands)
                 self.commands.append(cmd)
@@ -304,7 +305,7 @@ class ShellTranslator:
 
     def sys_exit(self, ret):
         expr = ast.parse('sys.exit()').body[0]
-        expr.value.args = [ast.Num(int(ret))]
+        expr.value.args = [ret]
         return expr
 
     def echo(self, s):
@@ -331,6 +332,8 @@ class ShellTranslator:
             call.args.append(ast.Str(cmd))
         elif isinstance(cmd, list):
             call.args.append(ast.List([ast.Str(c) for c in cmd], ast.Load()))
+        elif isinstance(cmd, ast.AST):
+            call.args.append(cmd)
         else:
             raise UnhandledTranslation('Unknown cmd %s' % type(cmd))
         if call_type == 'check_output':
@@ -360,7 +363,7 @@ class ShellTranslator:
         if words[0] == 'export':
             #XXX: fix this
             return self.export(words[1:])
-        return self.make_call([w[1] for w in cmd_words])
+        return self.make_call(self.translate_value(' '.join(words), vars, commands))
 
     def translate_simplecommand(self, cmd):
         if cmd.redirs:
