@@ -2,11 +2,13 @@
 
 import ast
 import meta
+import os
 import re
 import sys
 from cStringIO import StringIO
 
 import pysh.pyshyacc as pyshyacc
+import pysh.interp as interp
 from m4 import Parser
 
 MACROS = [
@@ -178,10 +180,68 @@ class UnhandledTranslation(Exception):
 
 flatten=lambda l: sum(map(flatten,l),[]) if isinstance(l,list) else [l]
 
+class fakedict(dict):
+    def __init__(self, *args, **kwargs):
+        dict.__init__(self, *args, **kwargs)
+        self._gets = set()
+    def reset(self):
+        self._gets = set()
+    def __getitem__(self, key):
+        self._gets.add(key)
+        return '{%s}' % key
+
 class ShellTranslator:
     def __init__(self, macro_handler, template):
         self.macro_handler = macro_handler
         self.template = template
+        # mostly for word expansion
+        self.interp = interp.Interpreter(os.getcwd())
+           # disable filename expansion
+        self.interp._env.set_opt('-f')
+        # hack around variable expansion
+        self.interp._env._env = fakedict()
+
+    class WrapExpand:
+        def __init__(self, translator, interp):
+            self.translator = translator
+            self.interp = interp
+            self.subshell_output = interp.subshell_output
+            self.commands = []
+            self.var_gets = set()
+
+        def __enter__(self):
+            # This is monkeypatching an interp.Interpreter method
+            def wrap_subshell(command):
+                cmd = self.translator.make_call(command, call_type='check_output').value
+                ret = '{cmd%d}' % len(self.commands)
+                self.commands.append(cmd)
+                return 0, ret
+            self.interp.subshell_output = wrap_subshell
+            self.interp._env._env.reset()
+            self.var_gets = self.interp._env._env._gets
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.interp.subshell_output = self.subshell_output
+            self.interp._env._env.reset()
+            return False
+
+    def expand_words(self, words):
+        '''
+        Returns (wordlist, variables_used, subcommands)
+        '''
+        with self.WrapExpand(self, self.interp) as wrap:
+            args = []
+            for word in words:
+                args += self.interp.expand_token(word)
+            return (words, wrap.var_gets, wrap.commands)
+
+    def expand_variable(self, word):
+        '''
+        Returns ((status, word), variables_used, subcommands)
+        '''
+        with self.WrapExpand(self, self.interp) as wrap:
+            return (self.interp.expand_variable(word), wrap.var_gets, wrap.commands)
 
     def translate_if(self, if_):
         test = flatten(self.translate_commands(if_.cond))
@@ -206,12 +266,34 @@ class ShellTranslator:
     def translate_pipeline(self, pipe):
         raise UnhandledTranslation('pipeline')
 
+    def translate_assign_value(self, value, vars, commands):
+        if not vars and not commands:
+            # no variable expansion or anything funny
+            return ast.Str(value)
+        if not commands and len(vars) == 1 and value[1:-1] == list(vars)[0]:
+            # simple case, just assigning the value of one var
+            # to another
+            call = ast.parse('vars.get("","")').body[0].value
+            call.args[0].s = list(vars)[0]
+            return call
+        if len(commands) == 1 and value == '{cmd0}':
+            # other simple case, assigning shell command output to var
+            return commands[0]
+        call = ast.parse('format("", vars, {})').body[0].value
+        call.args[0].s = value
+        if commands:
+            call.args[2].keys = [ast.Str('cmd%d' % i) for i in range(len(commands))]
+            call.args[2].values = commands
+        return call
+
     def translate_simpleassignment(self, assign):
+        type, (k, v) = assign
+        (status, expanded), vars, commands = self.expand_variable((k, v))
         sub = ast.Subscript(ast.Name('vars', ast.Load()),
-                            ast.Index(ast.Str(assign[0])),
+                            ast.Index(ast.Str(k)),
                             ast.Store())
         return ast.Assign(targets=[sub],
-                          value=ast.Str(assign[1]))
+                          value=self.translate_assign_value(expanded, vars, commands))
 
     thunk_re = re.compile('__python(\d+)__')
     def python_thunk(self, index):
@@ -238,6 +320,16 @@ class ShellTranslator:
 
         return [mkexport(e) for e in exports]
 
+    def make_call(self, wordstr, call_type=None):
+        expr = ast.parse('subprocess.call(shell=True, env=varenv(vars, exports))').body[0]
+        call = expr.value
+        call.args = [ast.Str(wordstr)]
+        if call_type == 'check_output':
+            expr2 = ast.parse('x.rstrip("\\n")').body[0]
+            expr2.value.func.value = expr.value
+            return expr2
+        return expr
+
     def translate_simplecommand_words(self, words):
         words = [w[1] for w in words]
         wordstr = ' '.join(words)
@@ -254,12 +346,7 @@ class ShellTranslator:
             return self.echo(words[1])
         if words[0] == 'export':
             return self.export(words[1:])
-        # lazy
-        expr = ast.parse('subprocess.call(shell=True, env=varenv(vars, exports))').body[0]
-        call = expr.value
-        # FIXME: this doesn't handle word expansion (variables etc)
-        call.args = [ast.Str(wordstr)]
-        return expr
+        return self.make_call(wordstr)
 
     def translate_simplecommand(self, cmd):
         if cmd.redirs:
@@ -267,7 +354,7 @@ class ShellTranslator:
         if cmd.words:
             return self.translate_simplecommand_words(cmd.words)
         else:
-            return [self.translate_simpleassignment(a[1]) for a in cmd.assigns]
+            return [self.translate_simpleassignment(a) for a in cmd.assigns]
 
     def translate_redirectlist(self, redirs):
         raise UnhandledTranslation('redirectlist')
@@ -316,8 +403,11 @@ class ShellTranslator:
 
 template = ast.parse("""
 import os
-import sys
+import string
 import subprocess
+import sys
+
+from collections import defaultdict
 
 SUBSTS = set()
 
@@ -326,6 +416,12 @@ def varenv(vars, exports):
     for e in exports:
         env[e] = vars[e]
     return env
+
+def format(s, vars, extra):
+    d = defaultdict(str, vars)
+    for k,v in extra.iteritems():
+        d[k] = v
+    return string.Formatter().vformat(s, (), d)
 
 def main(args):
     vars = dict(os.environ)
