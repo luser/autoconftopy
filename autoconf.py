@@ -418,38 +418,8 @@ class ShellTranslator:
         substassign.value.args = [ast.Str(s) for s in self.macro_handler.substs]
 
 
-template = ast.parse("""
-import os
-import string
-import subprocess
-import sys
-
-from collections import defaultdict
-
-SUBSTS = set()
-
-def varenv(vars, exports):
-    env = {}
-    for e in exports:
-        env[e] = vars[e]
-    return env
-
-def format(s, vars, extra):
-    d = defaultdict(str, vars)
-    for k,v in extra.iteritems():
-        d[k] = v
-    return string.Formatter().vformat(s, (), d)
-
-def main(args):
-    vars = dict(os.environ)
-    # set positional parameters
-    for i, a in enumerate(args):
-        vars[str(i)] = a
-    exports = set(vars.keys())
-
-if __name__ == '__main__':
-    main(sys.argv)
-""")
+template_file = os.path.join(os.path.dirname(__file__), 'template.py')
+template = ast.parse(open(template_file, 'r').read())
 
 translator = ShellTranslator(macro_handler, template)
 translator.translate(stuff)
