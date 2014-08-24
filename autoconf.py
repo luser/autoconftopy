@@ -147,27 +147,6 @@ class MacroHandler:
         code[0].value.args = [ast.Str('configure: error: ' + args[0] + '\n')]
         return self.py(code)
 
-p = Parser(sys.stdin.read())
-p.changequote('[',']')
-macro_handler = MacroHandler()
-for m in MACROS:
-    if hasattr(macro_handler, m):
-        p.macros[m] = getattr(macro_handler, m)
-    else:
-        # for now replace all other macros with true so the shell parses
-        p.macros[m] = lambda x: '[true]'
-
-stream = StringIO()
-# Parse m4
-p.parse(stream=stream)
-shell = stream.getvalue()
-if len(sys.argv) > 1:
-    sys.stdout.write(shell)
-    sys.exit(0)
-#open('/tmp/configure.sh','w').write(shell)
-
-# Parse shell
-stuff, leftover = pyshyacc.parse(shell, True)
 
 def reduce_depth(thing):
     # Reduce a pipeline of a single command down to that command.
@@ -418,10 +397,32 @@ class ShellTranslator:
         substassign.value.args = [ast.Str(s) for s in self.macro_handler.substs]
 
 
+p = Parser(sys.stdin.read())
+p.changequote('[',']')
+macro_handler = MacroHandler()
+for m in MACROS:
+    if hasattr(macro_handler, m):
+        p.macros[m] = getattr(macro_handler, m)
+    else:
+        # for now replace all other macros with true so the shell parses
+        p.macros[m] = lambda x: '[true]'
+
+stream = StringIO()
+# Parse m4
+p.parse(stream=stream)
+shell = stream.getvalue()
+if len(sys.argv) > 1:
+    sys.stdout.write(shell)
+    sys.exit(0)
+#open('/tmp/configure.sh','w').write(shell)
+
+# Parse shell
+stuff, leftover = pyshyacc.parse(shell, True)
+
 template_file = os.path.join(os.path.dirname(__file__), 'template.py')
 template = ast.parse(open(template_file, 'r').read())
 
+# now translate shell to Python
 translator = ShellTranslator(macro_handler, template)
 translator.translate(stuff)
-#meta.asttools.print_ast(template)
 sys.stdout.write(meta.dump_python_source(template))
