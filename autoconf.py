@@ -278,14 +278,17 @@ class ShellTranslator:
             call.args[2].values = commands
         return call
 
+    def make_var_assignment(self, var, value):
+        sub = ast.Subscript(ast.Name('vars', ast.Load()),
+                            ast.Index(ast.Str(var)),
+                            ast.Store())
+        return ast.Assign(targets=[sub],
+                          value=value)
+
     def translate_simpleassignment(self, assign):
         type, (k, v) = assign
         (status, expanded), vars, commands = self.expand_variable((k, v))
-        sub = ast.Subscript(ast.Name('vars', ast.Load()),
-                            ast.Index(ast.Str(k)),
-                            ast.Store())
-        return ast.Assign(targets=[sub],
-                          value=self.translate_value(expanded, vars, commands))
+        return self.make_var_assignment(k, self.translate_value(expanded, vars, commands))
 
     thunk_re = re.compile('__python(\d+)__')
     def python_thunk(self, index):
@@ -366,6 +369,17 @@ class ShellTranslator:
         else:
             return [self.translate_simpleassignment(a) for a in cmd.assigns]
 
+    def translate_for(self, for_):
+        (args, gets, commands) = self.expand_words(for_.items)
+        if gets or commands:
+            raise UnhandledTranslation('complicated for loop')
+        else:
+            items = ast.List([ast.Str(i) for i in args], ast.Load())
+        return ast.For(target=ast.Name(for_.name, ast.Store()),
+                       iter=items,
+                       body=[self.make_var_assignment(for_.name, ast.Name(for_.name, ast.Load()))] + self.translate_commands(for_.cmds),
+                       orelse=[])
+
     def translate_commands(self, v):
         if isinstance(v, list):
             return [self.translate_commands(c) for c in v]
@@ -383,8 +397,8 @@ class ShellTranslator:
             return self.translate_if(v)
 #        elif isinstance(v, pyshyacc.CaseCond):
 #            return self.translate_case(v)
-#        elif isinstance(v, pyshyacc.ForLoop):
-#            return self.translate_for(v)
+        elif isinstance(v, pyshyacc.ForLoop):
+            return self.translate_for(v)
 #        elif isinstance(v, pyshyacc.AndOr):
 #            return self.translate_andor(v)
 #        elif isinstance(v, pyshyacc.Pipeline):
