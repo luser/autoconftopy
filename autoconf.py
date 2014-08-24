@@ -366,12 +366,6 @@ class ShellTranslator:
         else:
             return [self.translate_simpleassignment(a) for a in cmd.assigns]
 
-    def translate_redirectlist(self, redirs):
-        raise UnhandledTranslation('redirectlist')
-
-    def translate_subshell(self, subshell):
-        raise UnhandledTranslation('subshell')
-
     def translate_commands(self, v):
         if isinstance(v, list):
             return [self.translate_commands(c) for c in v]
@@ -387,20 +381,20 @@ class ShellTranslator:
 
         if isinstance(v, pyshyacc.IfCond):
             return self.translate_if(v)
-        elif isinstance(v, pyshyacc.CaseCond):
-            return self.translate_case(v)
-        elif isinstance(v, pyshyacc.ForLoop):
-            return self.translate_for(v)
-        elif isinstance(v, pyshyacc.AndOr):
-            return self.translate_andor(v)
-        elif isinstance(v, pyshyacc.Pipeline):
-            return self.translate_pipeline(v)
+#        elif isinstance(v, pyshyacc.CaseCond):
+#            return self.translate_case(v)
+#        elif isinstance(v, pyshyacc.ForLoop):
+#            return self.translate_for(v)
+#        elif isinstance(v, pyshyacc.AndOr):
+#            return self.translate_andor(v)
+#        elif isinstance(v, pyshyacc.Pipeline):
+#            return self.translate_pipeline(v)
         elif isinstance(v, pyshyacc.SimpleCommand):
             return self.translate_simplecommand(v)
-        elif isinstance(v, pyshyacc.RedirectList):
-            return self.translate_redirectlist(v)
-        elif isinstance(v, pyshyacc.SubShell):
-            return self.translate_subshell(v)
+#        elif isinstance(v, pyshyacc.RedirectList):
+#            return self.translate_redirectlist(v)
+#        elif isinstance(v, pyshyacc.SubShell):
+#            return self.translate_subshell(v)
         else:
             raise UnhandledTranslation('Unhandled thing: %s' % repr(v))
 
