@@ -19,6 +19,18 @@ def format(s, vars, extra):
         d[k] = v
     return string.Formatter().vformat(s, (), d)
 
+class quoted:
+    def __init__(self, q):
+        self.q = q
+
+def for_loop(things, vars, extra):
+    for t in things:
+        if isinstance(t, quoted):
+            yield format(t.q, vars, extra)
+        else:
+            for x in format(t, vars, extra).split():
+                yield x
+
 def main(args):
     vars = dict(os.environ)
     # set positional parameters

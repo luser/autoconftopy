@@ -218,14 +218,27 @@ class ShellTranslator:
             self.interp._env._env.reset()
             return False
 
-    def expand_words(self, words):
+    def quoted(self, thing):
+        if not isinstance(thing, str):
+            raise UnhandledTranslation('Can\'t quote %s' % type(thing))
+        expr = ast.parse('quoted()').body[0]
+        expr.value.args = [ast.Str(thing)]
+        return expr.value
+
+    def expand_words(self, words, remember_quotes=False):
         '''
         Returns (wordlist, variables_used, subcommands)
         '''
         with self.WrapExpand(self, self.interp) as wrap:
             args = []
             for word in words:
-                args += self.interp.expand_token(word)
+                res = self.interp.expand_token(word)
+                # we don't actually expand vars, so this should be true
+                assert len(res) == 1
+                if (word[1].startswith('"') or word[1].startswith('\'')) and remember_quotes:
+                    args.append(self.quoted(res[0]))
+                else:
+                    args.append(res[0])
             return (args, wrap.var_gets, wrap.commands)
 
     def expand_variable(self, word):
@@ -271,8 +284,13 @@ class ShellTranslator:
         if len(commands) == 1 and value == '{cmd0}':
             # other simple case, assigning shell command output to var
             return commands[0]
+        return self.make_format(ast.Str(value), commands)
+
+    def make_format(self, thing, commands, func=None):
         call = ast.parse('format("", vars, {})').body[0].value
-        call.args[0].s = value
+        call.args[0] = thing
+        if func:
+            call.func.id = func
         if commands:
             call.args[2].keys = [ast.Str('cmd%d' % i) for i in range(len(commands))]
             call.args[2].values = commands
@@ -370,11 +388,18 @@ class ShellTranslator:
             return [self.translate_simpleassignment(a) for a in cmd.assigns]
 
     def translate_for(self, for_):
-        (args, gets, commands) = self.expand_words(for_.items)
+        (args, gets, commands) = self.expand_words(for_.items, remember_quotes=True)
+        items = []
+        for a in args:
+            if isinstance(a, str):
+                items.append(ast.Str(a))
+            else:
+                items.append(a)
+        items = ast.List(items, ast.Load())
         if gets or commands:
-            raise UnhandledTranslation('complicated for loop')
-        else:
-            items = ast.List([ast.Str(i) for i in args], ast.Load())
+            # FIXME: doesn't properly expand items that turn into multiple
+            # words
+            items = self.make_format(items, commands, func='for_loop')
         return ast.For(target=ast.Name(for_.name, ast.Store()),
                        iter=items,
                        body=[self.make_var_assignment(for_.name, ast.Name(for_.name, ast.Load()))] + self.translate_commands(for_.cmds),
