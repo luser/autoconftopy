@@ -23,7 +23,7 @@ def main(args):
     vars = dict(os.environ)
     # set positional parameters
     for i, a in enumerate(args):
-        vars[str(i)] = a
+        vars['argv%d' % i] = a
     exports = set(vars.keys())
 
 if __name__ == '__main__':

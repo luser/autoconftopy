@@ -170,6 +170,9 @@ class fakedict(dict):
         self._gets = set()
     def __getitem__(self, key):
         self._gets.add(key)
+        # hack to support positional params
+        if key.isdigit():
+            key = 'argv%s' % key
         return '{%s}' % key
 
 class ShellTranslator:
@@ -195,7 +198,13 @@ class ShellTranslator:
             # This is monkeypatching an interp.Interpreter method
             def wrap_subshell(command):
                 #XXX: this isn't sufficient. needs to parse command
-                cmd = self.translator.make_call(command, call_type='check_output').value
+                if command == 'dirname $0':
+                    # hardcode this
+                    cmd = ast.BoolOp(ast.Or(),
+                                     [self.translator.pathmanip('dirname', ast.Name('__file__', ast.Load())).value,
+                                      ast.Str('.')])
+                else:
+                    cmd = self.translator.make_call(command, call_type='check_output').value
                 ret = '{cmd%d}' % len(self.commands)
                 self.commands.append(cmd)
                 return 0, ret
@@ -290,6 +299,11 @@ class ShellTranslator:
     def echo(self, s):
         return ast.Print(None, [s], True)
 
+    def pathmanip(self, which, s):
+        expr = ast.parse('os.path.%s()' % which).body[0]
+        expr.value.args = [s]
+        return expr
+
     def export(self, exports):
         def mkexport(e):
             bits = e.split('=', 1)
@@ -304,7 +318,7 @@ class ShellTranslator:
         return [mkexport(e) for e in exports]
 
     def make_call(self, cmd, call_type=None):
-        expr = ast.parse('subprocess.call(shell=True, env=varenv(vars, exports))').body[0]
+        expr = ast.parse('subprocess.call(shell=True, env=vars)').body[0]
         call = expr.value
         call.args = []
         if isinstance(cmd, str):
