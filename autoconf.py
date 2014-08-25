@@ -286,7 +286,7 @@ class UnhandledTranslation(Exception):
         m = 'UnhandledTranslation: ' + self.msg
         if self.thing:
             s = StringIO()
-            pyshyacc.print_commands(stuff, s)
+            pyshyacc.print_commands(self.thing, s)
             m += ': ' + s.getvalue()
         return m
 
@@ -439,13 +439,29 @@ class ShellTranslator:
         return ret
 
 
+    def stringify(self, thing):
+        if isinstance(thing, tuple) and len(thing) == 2:
+            return self.stringify(thing[1])
+
+        if isinstance(thing, pyshyacc.Pipeline):
+            pipe = ' | '.join(self.stringify(c) for c in thing.commands)
+            if thing.reverse_status:
+                pipe = '!' + pipe
+            return pipe
+        elif isinstance(thing, pyshyacc.SimpleCommand):
+            return ' '.join(['%s=%s' % a for a in thing.assigns] + [w[1] for w in thing.words] + [self.stringify(r) for r in thing.redirs])
+        elif isinstance(thing, pyshyacc.IORedirect):
+            return (str(thing.io_number) if thing.io_number is not None else '') + thing.op + thing.filename
+
+        raise UnhandledTranslation('Don\'t know how to stringify', thing)
+
     def translate_pipeline(self, pipe):
         if len(pipe.commands) == 1:
             if isinstance(pipe.commands[0][1], pyshyacc.SimpleCommand):
                 return self.translate_simplecommand(pipe.commands[0], pipe.reverse_status)
             return self.translate_commands(pipe.commands[0])
 
-        raise UnhandledTranslation('pipeline', pipe)
+        return self.make_call(self.stringify(pipe))
 
     def translate_andor(self, andor):
         return ast.BoolOp(ast.And() if andor.op == '&&' else ast.Or(),
@@ -579,7 +595,8 @@ class ShellTranslator:
     def translate_simplecommand(self, cmd, reverse_status=False):
         cmd = cmd[1]
         if cmd.redirs:
-            raise UnhandledTranslation('Unsupported SimpleCommand.redirs', cmd)
+            # punt
+            return self.make_call(self.stringify(cmd))
         if cmd.words:
             return self.translate_simplecommand_words(cmd.words, reverse_status)
         else:
