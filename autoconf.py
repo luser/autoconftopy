@@ -436,6 +436,11 @@ class ShellTranslator:
 
         raise UnhandledTranslation('pipeline', pipe)
 
+    def translate_andor(self, andor):
+        return ast.BoolOp(ast.And() if andor.op == '&&' else ast.Or(),
+                          [self.translate_commands(andor.left).value,
+                           self.translate_commands(andor.right).value])
+
     def translate_value(self, value, vars, commands):
         # We may have parsed a list of words where only some of them have
         # expansions.
@@ -603,8 +608,8 @@ class ShellTranslator:
             return self.translate_case(v)
         elif isinstance(v, pyshyacc.ForLoop):
             return self.translate_for(v)
-#        elif isinstance(v, pyshyacc.AndOr):
-#            return self.translate_andor(v)
+        elif isinstance(v, pyshyacc.AndOr):
+            return self.translate_andor(v)
         elif isinstance(v, pyshyacc.Pipeline):
             return self.translate_pipeline(v)
         elif isinstance(v, pyshyacc.SimpleCommand):
