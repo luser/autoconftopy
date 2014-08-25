@@ -143,6 +143,7 @@ class MacroHandler:
         return self.AC_ERROR(args)
 
     def AC_ERROR(self, args):
+        # FIXME: parse args as a shell string
         code = ast.parse('sys.stderr.write()\nsys.exit(1)').body
         code[0].value.args = [ast.Str('configure: error: ' + args[0] + '\n')]
         return self.py(code)
