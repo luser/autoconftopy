@@ -6,6 +6,7 @@ import os
 import re
 import sys
 from cStringIO import StringIO
+from ply import yacc
 
 import pysh.pyshyacc as pyshyacc
 import pysh.interp as interp
@@ -148,6 +149,130 @@ class MacroHandler:
         code[0].value.args = [ast.Str('configure: error: ' + args[0] + '\n')]
         return self.py(code)
 
+# Parser for test(1) expressions
+SPECIAL = {
+    '(': 'LPAREN',
+    ')': 'RPAREN',
+    '!': 'NOT',
+    '-a': 'AND',
+    '-o': 'OR',
+    '-n': 'NONZERO',
+    '-z': 'ZERO',
+    '=': 'STR_EQUALS',
+    '!=': 'STR_NOT_EQUALS',
+    '-eq': 'INT_EQ',
+    '-ge': 'INT_GE',
+    '-gt': 'INT_GT',
+    '-le': 'INT_LE',
+    '-lt': 'INT_LT',
+    '-ne': 'INT_NE',
+    '-d': 'IS_DIR',
+    '-f': 'IS_FILE',
+    '-e': 'EXISTS',
+}
+
+class PLYCompatToken(object):
+    def __init__(self, name, value):
+        self.type = name
+        self.value = value
+        self.lineno = None
+        self.lexpos = None
+
+    def __repr__(self):
+        return "<Token: %r %r>" % (self.type, self.value)
+
+class Lexer:
+    def __init__(self, tokens):
+        self._tokens = tokens
+
+    def token(self):
+        if not self._tokens:
+            return None
+        t = self._tokens.pop(0)
+        return PLYCompatToken(SPECIAL.get(t, 'WORD'), t)
+
+class TestParser:
+    tokens = ['WORD'] + SPECIAL.values()
+
+    def __init__(self, translator, tokens, vars, cmds):
+        yacc.yacc(module=self)
+        self.translator = translator
+        self._input = tokens
+        self.vars = vars
+        self.cmds = cmds
+
+    def word(self, w):
+        return self.translator.translate_value(w, self.vars, self.cmds)
+
+    def p_expression(self, p):
+        """expression : expression_sub
+                        | expression_logical
+                        | expression_op
+                        | expression_word
+                        | expression_prefix_op"""
+        p[0] = p[1]
+
+    def p_expression_sub(self, p):
+        """expression_sub : LPAREN expression RPAREN
+                            | NOT expression"""
+        if len(p) == 3:
+            p[0] = ast.UnaryOp(ast.Not(), p[2])
+        else:
+            p[0] = p[2]
+
+    def p_expression_logical(self, p):
+        """expression_logical : expression AND expression
+                                | expression OR expression"""
+        p[0] = ast.BoolOp(ast.And() if p[2] == '-a' else ast.Or(),
+                          [p[1], p[3]])
+
+    def p_expression_op(self, p):
+        """expression_op : expression STR_EQUALS expression
+                           | expression STR_NOT_EQUALS expression
+                           | expression INT_EQ expression
+                           | expression INT_GE expression
+                           | expression INT_GT expression
+                           | expression INT_LE expression
+                           | expression INT_LT expression
+                           | expression INT_NE expression"""
+        # TODO: maybe toss some int()s around args?
+        op = {
+            '=': ast.Eq(),
+            '!=': ast.NotEq(),
+            '-eq': ast.Eq(),
+            '-ge': ast.GtE(),
+            '-gt': ast.Gt(),
+            '-le': ast.LtE(),
+            '-lt': ast.Lt(),
+            '-ne': ast.NotEq(),
+        }[p[2]]
+        p[0] = ast.BinOp(p[1], op, p[3])
+
+    def p_expression_word(self, p):
+        """expression_word : WORD"""
+        p[0] = self.word(p[1])
+
+    def p_expression_prefix_op(self, p):
+        """expression_prefix_op : NONZERO WORD
+                                  | ZERO WORD
+                                  | IS_DIR WORD
+                                  | IS_FILE WORD
+                                  | EXISTS WORD"""
+        if p[1] == '-n':
+            p[0] = self.word(p[2])
+        elif p[1] == '-z':
+            p[0] = ast.UnaryOp(ast.Not(), self.word(p[2]))
+        else:
+            expr = ast.parse('%s()' % {'-d': 'os.path.isdir',
+                                       '-f': 'os.path.isfile',
+                                       '-e': 'os.path.exists'}[p[1]]).body[0]
+            expr.value.args = [self.word(p[2])]
+            p[0] = expr.value
+
+    def parse(self):
+        lexer = Lexer(self._input)
+        ret = yacc.parse(lexer=lexer)
+        return ret
 
 class UnhandledTranslation(Exception):
     def __init__(self, msg, thing=None):
@@ -399,6 +524,13 @@ class ShellTranslator:
             raise UnhandledTranslation('Unknown call_type %s' % call_type)
         return expr
 
+    def translate_test(self, words, vars, commands):
+        words.pop(0)
+        parser = TestParser(self, words, vars, commands)
+        # the not is because the if parser expects to be working in
+        # shell exit codes.
+        return ast.Expr(ast.UnaryOp(ast.Not(), parser.parse()))
+
     def translate_simplecommand_words(self, cmd_words, reverse_status=False):
         words, vars, commands = self.expand_words(cmd_words)
         if not words:
@@ -417,7 +549,10 @@ class ShellTranslator:
         if words[0] == 'export':
             #XXX: fix this
             return self.export(words[1:])
-        call = self.make_call(self.translate_value(' '.join(words), vars, commands))
+        if words[0] == 'test':
+            call = self.translate_test(words, vars, commands)
+        else:
+            call = self.make_call(self.translate_value(' '.join(words), vars, commands))
         if reverse_status:
             return ast.UnaryOp(op=ast.Not(), operand=call.value)
         return call
