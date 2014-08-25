@@ -106,6 +106,7 @@ MACROS = [
     'MOZ_SUBCONFIGURE_NSPR',
     'MOZ_RUN_CONFIG_STATUS',
     'AM_LANGINFO_CODESET',
+    'MOZ_DO_OUTPUT_SUBDIRS',
 ]
 
 class MacroHandler:
@@ -285,9 +286,12 @@ class UnhandledTranslation(Exception):
     def __str__(self):
         m = 'UnhandledTranslation: ' + self.msg
         if self.thing:
-            s = StringIO()
-            pyshyacc.print_commands(self.thing, s)
-            m += ': ' + s.getvalue()
+            if isinstance(self.thing, pyshyacc.FunDef):
+                m += ': FunDef(' + self.thing.name + ')'
+            else:
+                s = StringIO()
+                pyshyacc.print_commands(self.thing, s)
+                m += ': ' + s.getvalue()
         return m
 
 flatten=lambda l: sum(map(flatten,l),[]) if isinstance(l,list) else [l]
@@ -464,9 +468,14 @@ class ShellTranslator:
         return self.make_call(self.stringify(pipe))
 
     def translate_andor(self, andor):
+        left = self.translate_commands(andor.left)
+        if hasattr(left, 'value'):
+            left = left.value
+        right = self.translate_commands(andor.right)
+        if hasattr(right, 'value'):
+            right = right.value
         return ast.BoolOp(ast.And() if andor.op == '&&' else ast.Or(),
-                          [self.translate_commands(andor.left).value,
-                           self.translate_commands(andor.right).value])
+                          [left, right])
 
     def translate_value(self, value, vars, commands):
         # We may have parsed a list of words where only some of them have
@@ -539,6 +548,16 @@ class ShellTranslator:
 
         return [mkexport(e) for e in exports]
 
+    def unset(self, unsets, vars, commands):
+        def mkunset(u):
+            val = self.translate_value(u, vars, commands)
+            d = ast.Delete([ast.Subscript(value=ast.Name('vars', ast.Load()),
+                                          slice=ast.Index(val),
+                                          ctx=ast.Del())])
+            return d
+
+        return [mkunset(u) for u in unsets]
+
     def make_call(self, cmd, call_type=None):
         expr = ast.parse('subprocess.call(shell=True, env=vars)').body[0]
         call = expr.value
@@ -584,6 +603,8 @@ class ShellTranslator:
             return self.echo(self.translate_value(words[1], vars, commands))
         if words[0] == 'export':
             return self.export(words[1:], vars, commands)
+        if words[0] == 'unset':
+            return self.unset(words[1:], vars, commands)
         if words[0] == 'test':
             call = self.translate_test(words, vars, commands)
         else:
@@ -615,9 +636,11 @@ class ShellTranslator:
         items = ast.List(items, ast.Load())
         if gets or commands:
             items = self.make_format(items, commands, func='for_loop')
+        body = [self.make_var_assignment(for_.name, ast.Name(for_.name, ast.Load()))] + flatten(self.translate_commands(for_.cmds))
+
         return ast.For(target=ast.Name(for_.name, ast.Store()),
                        iter=items,
-                       body=[self.make_var_assignment(for_.name, ast.Name(for_.name, ast.Load()))] + self.translate_commands(for_.cmds),
+                       body=body,
                        orelse=[])
 
     def translate_commands(self, v):
