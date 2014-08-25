@@ -279,10 +279,15 @@ class UnhandledTranslation(Exception):
         self.msg = msg
         self.thing = thing
 
+    def __repr__(self):
+        return self.__str__()
+
     def __str__(self):
         m = 'UnhandledTranslation: ' + self.msg
         if self.thing:
-            m += ': ' + pyshyacc.print_commands(self.thing)
+            s = StringIO()
+            pyshyacc.print_commands(stuff, s)
+            m += ': ' + s.getvalue()
         return m
 
 flatten=lambda l: sum(map(flatten,l),[]) if isinstance(l,list) else [l]
@@ -290,15 +295,18 @@ flatten=lambda l: sum(map(flatten,l),[]) if isinstance(l,list) else [l]
 class fakedict(dict):
     def __init__(self, *args, **kwargs):
         dict.__init__(self, *args, **kwargs)
-        self._gets = set()
+        self._gets = {}
     def reset(self):
-        self._gets = set()
-    def __getitem__(self, key):
-        self._gets.add(key)
+        self._gets = {}
+    def get(self, key, default):
+        self._gets[key] = default
         # hack to support positional params
         if key.isdigit():
             key = 'argv%s' % key
         return '{%s}' % key
+
+    def __getitem__(self, key):
+        return self.get(key, '')
 
 class ShellTranslator:
     def __init__(self, macro_handler, template):
@@ -454,7 +462,9 @@ class ShellTranslator:
             # simple case, just assigning the value of one var
             # to another
             call = ast.parse('vars.get("","")').body[0].value
-            call.args[0].s = list(vars)[0]
+            k, v = vars.items()[0]
+            call.args[0].s = k
+            call.args[1].s = v
             return call
         if len(commands) == 1 and value == '{cmd0}':
             # other simple case, assigning shell command output to var
@@ -651,6 +661,7 @@ if len(sys.argv) > 1:
 
 # Parse shell
 stuff, leftover = pyshyacc.parse(shell, True)
+#pyshyacc.print_commands(stuff, open('/tmp/configure.ast', 'w'))
 
 template_file = os.path.join(os.path.dirname(__file__), 'template.py')
 template = ast.parse(open(template_file, 'r').read())
