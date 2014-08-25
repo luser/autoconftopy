@@ -482,7 +482,7 @@ class ShellTranslator:
         main = filter(lambda x: isinstance(x, ast.FunctionDef) and x.name == 'main', self.template.body)[0]
         main.body.extend(flatten(self.translate_commands(commands)))
         substassign = filter(lambda x: isinstance(x, ast.Assign) and x.targets[0].id == 'SUBSTS', self.template.body)[0]
-        substassign.value.args = [ast.Str(s) for s in self.macro_handler.substs]
+        substassign.value.args = [ast.List([ast.Str(s) for s in self.macro_handler.substs], ast.Load())]
 
 
 p = Parser(sys.stdin.read())
