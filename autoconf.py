@@ -424,7 +424,10 @@ class ShellTranslator:
                 ret.extend(statements)
             elif hasattr(prev_if, 'orelse'):
                 prev_if.orelse = statements
-            prev_if = statements[0]
+            if statements:
+                prev_if = statements[0]
+            else:
+                prev_if = None
         return ret
 
 
@@ -497,16 +500,16 @@ class ShellTranslator:
         expr.value.args = [s]
         return expr
 
-    def export(self, exports):
+    def export(self, exports, vars, commands):
         def mkexport(e):
             bits = e.split('=', 1)
             var = bits[0]
             expr = ast.parse('exports.add()').body[0]
             expr.value.args = [ast.Str(var)]
-            if len(e) == 1:
+            if len(bits) == 1:
                 return expr
-            val = e[1]
-            return [self.translate_simpleassignment(bits), expr]
+            val = bits[1]
+            return [self.make_var_assignment(var, self.translate_value(val, vars, commands)), expr]
 
         return [mkexport(e) for e in exports]
 
@@ -554,8 +557,7 @@ class ShellTranslator:
         if words[0] == 'echo':
             return self.echo(self.translate_value(words[1], vars, commands))
         if words[0] == 'export':
-            #XXX: fix this
-            return self.export(words[1:])
+            return self.export(words[1:], vars, commands)
         if words[0] == 'test':
             call = self.translate_test(words, vars, commands)
         else:
