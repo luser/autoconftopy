@@ -148,17 +148,16 @@ class MacroHandler:
         return self.py(code)
 
 
-def reduce_depth(thing):
-    # Reduce a pipeline of a single command down to that command.
-    if isinstance(thing, pyshyacc.Pipeline) and not thing.reverse_status and len(thing.commands) == 1:
-        commands = thing.commands[0]
-        if isinstance(commands, tuple) and len(commands) == 2:
-            commands = commands[1]
-        return reduce_depth(commands)
-    return thing
-
 class UnhandledTranslation(Exception):
-    pass
+    def __init__(self, msg, thing=None):
+        self.msg = msg
+        self.thing = thing
+
+    def __str__(self):
+        m = 'UnhandledTranslation: ' + self.msg
+        if self.thing:
+            m += ': ' + pyshyacc.print_commands(self.thing)
+        return m
 
 flatten=lambda l: sum(map(flatten,l),[]) if isinstance(l,list) else [l]
 
@@ -258,18 +257,26 @@ class ShellTranslator:
         if not body:
             body.append(ast.Pass())
         orelse = flatten(self.translate_commands(if_.else_cmds))
-        call = test[0].value if isinstance(test[0], ast.Expr) else test[0]
-        test_expr = ast.UnaryOp(ast.Not(), call)
+
+        if isinstance(test[0], ast.Expr):
+            call = test[0].value
+        else:
+            call = test[0]
+        if isinstance(call, ast.UnaryOp) and isinstance(call.op, ast.Not):
+            # no sense in double-negating
+            test_expr = call.operand
+        else:
+            test_expr = ast.UnaryOp(ast.Not(), call)
         return ast.If(test_expr, body, orelse)
 
-    def translate_case(self, case):
-        raise UnhandledTranslation('case')
-
-    def translate_andor(self, andor):
-        raise UnhandledTranslation('andor')
 
     def translate_pipeline(self, pipe):
-        raise UnhandledTranslation('pipeline')
+        if len(pipe.commands) == 1:
+            if isinstance(pipe.commands[0][1], pyshyacc.SimpleCommand):
+                return self.translate_simplecommand(pipe.commands[0], pipe.reverse_status)
+            return self.translate_commands(pipe.commands[0])
+
+        raise UnhandledTranslation('pipeline', pipe)
 
     def translate_value(self, value, vars, commands):
         if not vars and not commands:
@@ -359,7 +366,7 @@ class ShellTranslator:
             raise UnhandledTranslation('Unknown call_type %s' % call_type)
         return expr
 
-    def translate_simplecommand_words(self, cmd_words):
+    def translate_simplecommand_words(self, cmd_words, reverse_status=False):
         words, vars, commands = self.expand_words(cmd_words)
         if not words:
             return []
@@ -377,14 +384,20 @@ class ShellTranslator:
         if words[0] == 'export':
             #XXX: fix this
             return self.export(words[1:])
-        return self.make_call(self.translate_value(' '.join(words), vars, commands))
+        call = self.make_call(self.translate_value(' '.join(words), vars, commands))
+        if reverse_status:
+            return ast.UnaryOp(op=ast.Not(), operand=call.value)
+        return call
 
-    def translate_simplecommand(self, cmd):
+    def translate_simplecommand(self, cmd, reverse_status=False):
+        cmd = cmd[1]
         if cmd.redirs:
-            raise UnhandledTranslation('Unsupported SimpleCommand.redirs')
+            raise UnhandledTranslation('Unsupported SimpleCommand.redirs', cmd)
         if cmd.words:
-            return self.translate_simplecommand_words(cmd.words)
+            return self.translate_simplecommand_words(cmd.words, reverse_status)
         else:
+            if reverse_status:
+                raise UnhandledTranslation('Unsupported !SimpleCommand assigns', cmd)
             return [self.translate_simpleassignment(a) for a in cmd.assigns]
 
     def translate_for(self, for_):
@@ -416,8 +429,6 @@ class ShellTranslator:
                     return self.translate_commands(v[1])
             return self.translate_commands(list(v))
 
-        v = reduce_depth(v)
-
         if isinstance(v, pyshyacc.IfCond):
             return self.translate_if(v)
 #        elif isinstance(v, pyshyacc.CaseCond):
@@ -426,8 +437,8 @@ class ShellTranslator:
             return self.translate_for(v)
 #        elif isinstance(v, pyshyacc.AndOr):
 #            return self.translate_andor(v)
-#        elif isinstance(v, pyshyacc.Pipeline):
-#            return self.translate_pipeline(v)
+        elif isinstance(v, pyshyacc.Pipeline):
+            return self.translate_pipeline(v)
         elif isinstance(v, pyshyacc.SimpleCommand):
             return self.translate_simplecommand(v)
 #        elif isinstance(v, pyshyacc.RedirectList):
@@ -435,7 +446,7 @@ class ShellTranslator:
 #        elif isinstance(v, pyshyacc.SubShell):
 #            return self.translate_subshell(v)
         else:
-            raise UnhandledTranslation('Unhandled thing: %s' % repr(v))
+            raise UnhandledTranslation('Unhandled thing', v)
 
     def translate(self, commands):
         main = filter(lambda x: isinstance(x, ast.FunctionDef) and x.name == 'main', self.template.body)[0]
