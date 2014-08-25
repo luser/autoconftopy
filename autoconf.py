@@ -437,7 +437,9 @@ class ShellTranslator:
         raise UnhandledTranslation('pipeline', pipe)
 
     def translate_value(self, value, vars, commands):
-        if not vars and not commands:
+        # We may have parsed a list of words where only some of them have
+        # expansions.
+        if (not vars and not commands) or '{' not in value:
             # no variable expansion or anything funny
             return ast.Str(value)
         if not commands and len(vars) == 1 and value[1:-1] == list(vars)[0]:
