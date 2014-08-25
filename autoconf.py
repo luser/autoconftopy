@@ -113,6 +113,31 @@ class MacroHandler:
     def __init__(self):
         self.expansions = []
         self.substs = set()
+        self.args = []
+
+    def add_macros(self, macros, p):
+        for m in macros:
+            if hasattr(self, m):
+                p.macros[m] = self.make_macro(m, p)
+            else:
+                # for now replace all other macros with true so the shell parses
+                p.macros[m] = lambda x: '[true]'
+
+    def make_macro(self, macro, original_parser):
+        def invoke(args):
+            return self.invoke_macro(macro, args, original_parser)
+        return invoke
+
+    def invoke_macro(self, macro, args, original_parser):
+        parsed_args = []
+        for arg in args:
+            p = Parser(arg)
+            p.changequote('[',']')
+            macro_handler.add_macros(MACROS, p)
+            stream = StringIO()
+            p.parse(stream=stream)
+            parsed_args.append(stream.getvalue())
+        return getattr(self, macro)(parsed_args)
 
     def get_expansion(self, index):
         return self.expansions[index]
@@ -149,6 +174,34 @@ class MacroHandler:
         code = ast.parse('sys.stderr.write()\nsys.exit(1)').body
         code[0].value.args = [ast.Str('configure: error: ' + args[0] + '\n')]
         return self.py(code)
+
+    def parse_shell(self, shell):
+        translator = ShellTranslator(self, None)
+        return translator.translate(shell)
+
+    help_re = re.compile(r'^\s*--[a-z-]+\s+')
+    def add_argument(self, arg, name, action, help, if_given, if_not_given):
+        help = self.help_re.sub('', help)
+        name = re.sub(r'[^\w]', '_', name)
+        self.args.append((arg, name, help, action))
+        if if_given:
+            if_given = self.parse_shell(if_given)
+        else:
+            if_given = []
+        if if_not_given:
+            if_not_given = self.parse_shell(if_not_given)
+        else:
+            if_not_given = []
+        if_ = ast.If(ast.Attribute(ast.Name('args', ast.Load()), name, ast.Load()),
+                     if_given,
+                     if_not_given)
+        return self.py(if_)
+
+    def MOZ_ARG_ENABLE_BOOL(self, args):
+        if_given = args[2] if len(args) > 2 else None
+        if_not_given = args[3] if len(args) > 3 else None
+        return self.add_argument('--enable-%s' % args[0], args[0], 'store_true', args[1], if_given, if_not_given)
+
 
 # Parser for test(1) expressions
 SPECIAL = {
@@ -673,22 +726,36 @@ class ShellTranslator:
         else:
             raise UnhandledTranslation('Unhandled thing', v)
 
-    def translate(self, commands):
+    def make_argparse_arguments(self):
+        for arg, name, help, action in self.macro_handler.args:
+            expr = ast.parse('parser.add_argument()').body[0]
+            expr.value.args = [ast.Str(arg)]
+            expr.value.keywords = [
+                ast.keyword('dest', ast.Str(name)),
+                ast.keyword('action', ast.Str(action)),
+                ast.keyword('help', ast.Str(help)),
+            ]
+            yield expr
+
+    def translate(self, shell, toplevel=False):
+        commands, leftover = pyshyacc.parse(shell, True)
+        if toplevel:
+            return self.translate_toplevel(commands)
+        return flatten(self.translate_commands(commands))
+
+    def translate_toplevel(self, commands):
         main = filter(lambda x: isinstance(x, ast.FunctionDef) and x.name == 'main', self.template.body)[0]
         main.body.extend(flatten(self.translate_commands(commands)))
         substassign = filter(lambda x: isinstance(x, ast.Assign) and x.targets[0].id == 'SUBSTS', self.template.body)[0]
         substassign.value.args = [ast.List([ast.Str(s) for s in self.macro_handler.substs], ast.Load())]
+        make_arg_parser = filter(lambda x: isinstance(x, ast.FunctionDef) and x.name == 'make_arg_parser', self.template.body)[0]
+        make_arg_parser.body[-1:-1] = self.make_argparse_arguments()
 
 
 p = Parser(sys.stdin.read())
 p.changequote('[',']')
 macro_handler = MacroHandler()
-for m in MACROS:
-    if hasattr(macro_handler, m):
-        p.macros[m] = getattr(macro_handler, m)
-    else:
-        # for now replace all other macros with true so the shell parses
-        p.macros[m] = lambda x: '[true]'
+macro_handler.add_macros(MACROS, p)
 
 stream = StringIO()
 # Parse m4
@@ -697,16 +764,12 @@ shell = stream.getvalue()
 if len(sys.argv) > 1:
     sys.stdout.write(shell)
     sys.exit(0)
-#open('/tmp/configure.sh','w').write(shell)
 
-# Parse shell
-stuff, leftover = pyshyacc.parse(shell, True)
-#pyshyacc.print_commands(stuff, open('/tmp/configure.ast', 'w'))
-
+# now translate shell to Python
 template_file = os.path.join(os.path.dirname(__file__), 'template.py')
 template = ast.parse(open(template_file, 'r').read())
 
-# now translate shell to Python
 translator = ShellTranslator(macro_handler, template)
-translator.translate(stuff)
+translator.translate(shell, toplevel=True)
+
 sys.stdout.write(meta.dump_python_source(template))

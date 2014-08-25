@@ -1,3 +1,4 @@
+import argparse
 import fnmatch
 import os
 import string
@@ -8,13 +9,9 @@ from collections import defaultdict
 
 SUBSTS = set()
 
-
-def varenv(vars, exports):
-    env = {}
-    for e in exports:
-        env[e] = vars[e]
-    return env
-
+def make_arg_parser():
+    parser = argparse.ArgumentParser()
+    return parser
 
 def format(s, vars, extra):
     d = defaultdict(str, vars)
@@ -43,7 +40,9 @@ def main(args):
     for i, a in enumerate(args):
         vars['argv%d' % i] = a
     exports = set(vars.keys())
+    parser = make_arg_parser()
+    args = parser.parse_args(args)
 
 
 if __name__ == '__main__':
-    main(sys.argv)
+    main(sys.argv[1:])
