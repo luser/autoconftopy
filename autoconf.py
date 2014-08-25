@@ -271,7 +271,7 @@ class ShellTranslator:
 
     def translate_case_pattern(self, pattern):
         words, vars, commands = self.expand_words([('TOKEN', pattern)])
-        call = ast.parse('match(case)').body[0].value
+        call = ast.parse('fnmatch.fnmatch(case)').body[0].value
         call.args.append(self.translate_value(words[0], vars, commands))
         return call
 
@@ -282,21 +282,23 @@ class ShellTranslator:
         prev_if = None
         ret = [assign]
         for c in case.case_list:
-            matches = []
-            # TODO: check for pattern = *, treat as else?
-            for p in c.patterns:
-                matches.append(self.translate_case_pattern(p))
-            if len(matches) == 1:
-                test = matches[0]
-            else:
-                test = ast.BoolOp(op=ast.Or(), values=matches)
             body = flatten(self.translate_commands(c.statements))
-            if_ = ast.If(test, body, [])
-            if not prev_if:
-                ret.append(if_)
+            if len(c.patterns) == 1 and c.patterns[0] == '*':
+                statements = body
             else:
-                prev_if.orelse = [if_]
-            prev_if = if_
+                matches = []
+                for p in c.patterns:
+                    matches.append(self.translate_case_pattern(p))
+                if len(matches) == 1:
+                    test = matches[0]
+                else:
+                    test = ast.BoolOp(op=ast.Or(), values=matches)
+                statements = [ast.If(test, body, [])]
+            if not prev_if:
+                ret.extend(statements)
+            elif hasattr(prev_if, 'orelse'):
+                prev_if.orelse = statements
+            prev_if = statements[0]
         return ret
 
 
