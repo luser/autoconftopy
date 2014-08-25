@@ -269,6 +269,36 @@ class ShellTranslator:
             test_expr = ast.UnaryOp(ast.Not(), call)
         return ast.If(test_expr, body, orelse)
 
+    def translate_case_pattern(self, pattern):
+        words, vars, commands = self.expand_words([('TOKEN', pattern)])
+        call = ast.parse('match(case)').body[0].value
+        call.args.append(self.translate_value(words[0], vars, commands))
+        return call
+
+    def translate_case(self, case):
+        words, vars, commands = self.expand_words([('TOKEN', case.token)])
+        assign = ast.Assign(targets=[ast.Name('case', ast.Store())],
+                            value=self.translate_value(words[0], vars, commands))
+        prev_if = None
+        ret = [assign]
+        for c in case.case_list:
+            matches = []
+            # TODO: check for pattern = *, treat as else?
+            for p in c.patterns:
+                matches.append(self.translate_case_pattern(p))
+            if len(matches) == 1:
+                test = matches[0]
+            else:
+                test = ast.BoolOp(op=ast.Or(), values=matches)
+            body = flatten(self.translate_commands(c.statements))
+            if_ = ast.If(test, body, [])
+            if not prev_if:
+                ret.append(if_)
+            else:
+                prev_if.orelse = [if_]
+            prev_if = if_
+        return ret
+
 
     def translate_pipeline(self, pipe):
         if len(pipe.commands) == 1:
@@ -410,8 +440,6 @@ class ShellTranslator:
                 items.append(a)
         items = ast.List(items, ast.Load())
         if gets or commands:
-            # FIXME: doesn't properly expand items that turn into multiple
-            # words
             items = self.make_format(items, commands, func='for_loop')
         return ast.For(target=ast.Name(for_.name, ast.Store()),
                        iter=items,
@@ -431,8 +459,8 @@ class ShellTranslator:
 
         if isinstance(v, pyshyacc.IfCond):
             return self.translate_if(v)
-#        elif isinstance(v, pyshyacc.CaseCond):
-#            return self.translate_case(v)
+        elif isinstance(v, pyshyacc.CaseCond):
+            return self.translate_case(v)
         elif isinstance(v, pyshyacc.ForLoop):
             return self.translate_for(v)
 #        elif isinstance(v, pyshyacc.AndOr):

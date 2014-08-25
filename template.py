@@ -1,3 +1,4 @@
+import fnmatch
 import os
 import string
 import subprocess
@@ -30,6 +31,11 @@ def for_loop(things, vars, extra):
         else:
             for x in format(t, vars, extra).split():
                 yield x
+
+def match(thing, pattern):
+    if '*' not in pattern and '?' not in pattern:
+        return thing == pattern
+    return fnmatch.fnmatch(thing, pattern)
 
 def main(args):
     vars = dict(os.environ)
