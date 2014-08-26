@@ -1,0 +1,181 @@
+# HG changeset patch
+# Parent f41a267983c1bab07c9fa31d04f48ac7c03806b6
+
+diff --git a/aclocal.m4 b/aclocal.m4
+--- a/aclocal.m4
++++ b/aclocal.m4
+@@ -29,16 +29,17 @@
+ builtin(include, build/autoconf/arch.m4)dnl
+ builtin(include, build/autoconf/android.m4)dnl
+ builtin(include, build/autoconf/zlib.m4)dnl
+ builtin(include, build/autoconf/linux.m4)dnl
+ builtin(include, build/autoconf/python-virtualenv.m4)dnl
+ builtin(include, build/autoconf/winsdk.m4)dnl
+ builtin(include, build/autoconf/icu.m4)dnl
+ builtin(include, build/autoconf/ffi.m4)dnl
++builtin(include, build/autoconf/things.m4)dnl
+ 
+ MOZ_PROG_CHECKMSYS()
+ 
+ # Read the user's .mozconfig script.  We can't do this in
+ # configure.in: autoconf puts the argument parsing code above anything
+ # expanded from configure.in, and we need to get the configure options
+ # from .mozconfig in place before that argument parsing code.
+ MOZ_READ_MOZCONFIG(.)
+diff --git a/build/autoconf/things.m4 b/build/autoconf/things.m4
+new file mode 100644
+--- /dev/null
++++ b/build/autoconf/things.m4
+@@ -0,0 +1,17 @@
++define([MOZ_DO_OUTPUT_SUBDIRS], [do_output_subdirs() {
++    if test -n "$_subconfigure_subdirs"; then
++      AC_MSG_ERROR([Cannot specify more than one sub-sub-configure])
++     fi
++    _subconfigure_subdir="$1"
++    _subconfigure_config_args="$ac_configure_args"
++  }
++  tmpscript=`$PYTHON -c 'import os, tempfile; print tempfile.mktemp(prefix="subscript.").replace(os.sep, "/")'` || exit 1
++  m4 "${srcdir}/build/autoconf/subconfigure.m4" \
++     "${srcdir}/build/autoconf/altoptions.m4" \
++     "${srcdir}/${MOZ_BUILD_APP}/configure.in" > $tmpscript
++  . $tmpscript
++  rm -f $tmpscript
++])
++define([ABSPATH], [`cd $1 && pwd`])
++define([ABSPATH_W], [`cd $1 && pwd -W`])
++
+diff --git a/configure.in b/configure.in
+--- a/configure.in
++++ b/configure.in
+@@ -84,22 +84,23 @@
+ dnl Initialize the Pthread test variables early so they can be
+ dnl  overridden by each platform.
+ dnl ========================================================
+ MOZ_USE_PTHREADS=
+ _PTHREAD_LDFLAGS=""
+ 
+ dnl Do not allow objdir == srcdir builds.
+ dnl ==============================================================
+-_topsrcdir=`cd \`dirname $0\`; pwd`
++_topsrcdir=`dirname $0`
++_topsrcdir=`cd $_topsrcdir; pwd`
+ _objdir=`pwd`
+ 
+ 
+ dnl TODO Don't exempt L10N builds once bug 842760 is resolved.
+-if test "$_topsrcdir" = "$_objdir" -a "${with_l10n_base+set}" != set; then
++if test "$_topsrcdir" = "$_objdir" -a -z "${with_l10n_base}"; then
+   echo "  ***"
+   echo "  * Building directly in the main source directory is not allowed."
+   echo "  *"
+   echo "  * To build, you must run configure from a separate directory"
+   echo "  * (referred to as an object directory)."
+   echo "  *"
+   echo "  * If you are building with a mozconfig, you will need to change your"
+   echo "  * mozconfig to point to a different object directory."
+@@ -115,25 +116,23 @@
+   fi
+ done
+ if test "$_conflict_files"; then
+   echo "***"
+   echo "*   Your source tree contains these files:"
+   for file in $_conflict_files; do
+     echo "*         $file"
+   done
+-  cat 1>&2 <<-EOF
+-  *   This indicates that you previously built in the source tree.
+-  *   A source tree build can confuse the separate objdir build.
+-  *
+-  *   To clean up the source tree:
+-  *     1. cd $_topsrcdir
+-  *     2. gmake distclean
+-  ***
+-EOF
++  echo "*   This indicates that you previously built in the source tree."
++  echo "*   A source tree build can confuse the separate objdir build."
++  echo "*"
++  echo "*   To clean up the source tree:"
++  echo "*     1. cd $_topsrcdir"
++  echo "*     2. gmake distclean"
++  echo "***"
+   exit 1
+   break
+ fi
+ MOZ_BUILD_ROOT=`pwd -W 2>/dev/null || pwd`
+ 
+ MOZ_PYTHON
+ 
+ MOZ_DEFAULT_COMPILER
+@@ -3127,17 +3126,19 @@
+     if test "$ac_cv_gcc_arm_eabi" = "yes"; then
+         HAVE_ARM_EABI=1
+         ARM_ABI_PREFIX=eabi-
+     else
+         ARM_ABI_PREFIX=oabi-
+     fi
+   fi
+ 
+-  TARGET_COMPILER_ABI="${TARGET_COMPILER_ABI-${ARM_ABI_PREFIX}gcc3}"
++  if test -z "$TARGET_COMPILER_ABI"; then
++     TARGET_COMPILER_ABI="${ARM_ABI_PREFIX}gcc3"
++  fi
+ fi
+ 
+ dnl Check to see if we can resolve ambiguity with |using|.
+ AC_CACHE_CHECK(whether the C++ \"using\" keyword resolves ambiguity,
+                ac_cv_cpp_ambiguity_resolving_using,
+                [AC_TRY_COMPILE(class X {
+                                  public: int go(const X&) {return 3;}
+                                          int jo(const X&) {return 3;}
+@@ -3982,29 +3983,17 @@
+   EARLY_BETA_OR_EARLIER=
+ elif test "$EARLY_BETA_OR_EARLIER"; then
+   AC_DEFINE(EARLY_BETA_OR_EARLIER)
+ fi
+ AC_SUBST(EARLY_BETA_OR_EARLIER)
+ 
+ # Allow the application to provide a subconfigure script
+ if test -f "${srcdir}/${MOZ_BUILD_APP}/configure.in" ; then
+-  do_output_subdirs() {
+-    if test -n "$_subconfigure_subdirs"; then
+-      AC_MSG_ERROR([Cannot specify more than one sub-sub-configure])
+-     fi
+-    _subconfigure_subdir="$1"
+-    _subconfigure_config_args="$ac_configure_args"
+-  }
+-  tmpscript=`$PYTHON -c 'import os, tempfile; print tempfile.mktemp(prefix="subscript.").replace(os.sep, "/")'` || exit 1
+-  m4 "${srcdir}/build/autoconf/subconfigure.m4" \
+-     "${srcdir}/build/autoconf/altoptions.m4" \
+-     "${srcdir}/${MOZ_BUILD_APP}/configure.in" > $tmpscript
+-  . $tmpscript
+-  rm -f $tmpscript
++  MOZ_DO_OUTPUT_SUBDIRS
+ fi
+ 
+ # Allow someone to change MOZ_APP_NAME and MOZ_APP_BASENAME in mozconfig
+ MOZ_ARG_WITH_STRING(app-name,
+ [--with-app-name=APPNAME sets MOZ_APP_NAME to APPNAME],
+ WITH_APP_NAME=$withval,
+ )
+ 
+@@ -8522,17 +8511,19 @@
+ if test -z "$IS_ALPHA"; then
+   changequote(,)
+   MOZ_APP_MAXVERSION=`echo $MOZ_APP_VERSION | sed "s|\(^[0-9]*\).*|\1|"`.*
+   changequote([,])
+ else
+   MOZ_APP_MAXVERSION=$MOZ_APP_VERSION
+ fi
+ 
+-MOZ_B2G_VERSION=${MOZ_B2G_VERSION:-"1.0.0"}
++if test -z "$MOZ_B2G_VERSION"; then
++   MOZ_B2G_VERSION="1.0.0"
++fi
+ AC_DEFINE_UNQUOTED(MOZ_B2G_VERSION,"$MOZ_B2G_VERSION")
+ AC_DEFINE_UNQUOTED(MOZ_B2G_OS_NAME,"$MOZ_B2G_OS_NAME")
+ 
+ AC_SUBST(MOZ_APP_NAME)
+ AC_SUBST(MOZ_APP_DISPLAYNAME)
+ AC_SUBST(MOZ_APP_BASENAME)
+ AC_SUBST(MOZ_APP_VENDOR)
+ AC_SUBST(MOZ_APP_PROFILE)
